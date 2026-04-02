@@ -1424,7 +1424,7 @@ class _NonLinearLSQFitter(Fitter):
         farg = (
             model_copy,
             weights,
-        ) + _convert_input(x, y, z)
+        ) + _convert_input(x, y, z, model=model_copy)
 
         fkwarg = {"fit_param_indices": set(fit_param_indices)}
 
