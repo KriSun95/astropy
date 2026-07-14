@@ -10,6 +10,7 @@ from numpy.testing import assert_allclose
 
 import astropy.units as u
 from astropy.modeling import models, rotations
+from astropy.table import MaskedColumn
 from astropy.tests.helper import assert_quantity_allclose
 from astropy.wcs import wcs
 
@@ -114,8 +115,7 @@ def test_Rotation2D_errors():
     # Bad evaluation input shapes
     x = np.array([1, 2])
     y = np.array([1, 2, 3])
-    MESSAGE = r"Expected input arrays to have the same shape"
-
+    MESSAGE = "all input arrays must have the same shape"
     with pytest.raises(ValueError, match=MESSAGE):
         model.evaluate(x, y, model.angle)
     with pytest.raises(ValueError, match=MESSAGE):
@@ -124,7 +124,7 @@ def test_Rotation2D_errors():
     # Bad evaluation units
     x = np.array([1, 2])
     y = np.array([1, 2])
-    MESSAGE = r"x and y must have compatible units"
+    MESSAGE = r"'' \(dimensionless\) and 'm' \(length\) are not convertible"
     with pytest.raises(u.UnitsError, match=MESSAGE):
         model.evaluate(x * u.m, y, model.angle)
 
@@ -380,3 +380,20 @@ def test__SkyRotation__evaluate():
         assert mkEval.call_args_list == [
             mk.call(model, phi, theta, lon, lat, lon_pole, "zxz")
         ]
+
+
+@pytest.mark.parametrize(
+    "model", [rotations.RotationSequence3D, rotations.SphericalRotationSequence]
+)
+def test_masked_column_rotation(model):
+    """
+    Test that the rotation of a masked column table is handled correctly.
+        This is a regression test for #20052
+    """
+    mdl = model([0, 0, 0], axes_order=["x", "y", "z"])
+    col = MaskedColumn([1, 2])
+    truth = (np.array([1, 2]),)
+    if model is rotations.RotationSequence3D:
+        assert_allclose(mdl(col, col, col), truth * 3)
+    else:
+        assert_allclose(mdl(col, col), truth * 2)

@@ -5,11 +5,13 @@ the FITS 4 standard.
 """
 
 import sys
+import warnings
 from math import prod
 
 import numpy as np
 
 from astropy.io.fits.hdu.base import BITPIX2DTYPE
+from astropy.utils.exceptions import AstropyUserWarning
 
 from ._codecs import PLIO1, Gzip1, Gzip2, HCompress1, NoCompress, Rice1
 from ._quantization import DITHER_METHODS, QuantizationFailedException, Quantize
@@ -541,6 +543,50 @@ def compress_image_data(
     if not isinstance(image_data, np.ndarray):
         raise TypeError("Image data must be a numpy.ndarray")
 
+    # PLIO_1 encodes only non-negative integers, but astropy stores unsigned
+    # FITS data via the BZERO=2**(N-1) convention which produces negative
+    # values for the lower half of the range. Reject unsigned multi-byte
+    # input to avoid corrupted writes.
+    if (
+        compression_type == "PLIO_1"
+        and image_data.dtype.kind == "u"
+        and image_data.dtype.itemsize >= 2
+    ):
+        raise ValueError(
+            "PLIO_1 compression does not support unsigned integers larger than 8 bits"
+        )
+
+    if (
+        compression_type in ("RICE_1", "PLIO_1", "HCOMPRESS_1")
+        and image_data.dtype.kind in ("i", "u")
+        and image_data.dtype.itemsize == 8
+    ):
+        # numpy's same_value check does not byteswap before comparing values,
+        # so non-native source data silently truncates instead of raising.
+        # Convert source to native byte order first.
+        native_source = image_data.astype(
+            image_data.dtype.newbyteorder("="), copy=False
+        )
+        new_dt = f"{image_data.dtype.kind}4"
+        try:
+            image_data = native_source.astype(new_dt, casting="same_value")
+            compressed_header["ZBITPIX"] = 32
+            if image_data.dtype.kind == "u":
+                # The input image header carries BZERO=2**63 for the original
+                # uint64 storage; after converting to uint32 the offset must
+                # be 2**31 so the FITS reader reconstructs the right values.
+                compressed_header["BZERO"] = 2**31
+            warnings.warn(
+                f"{compression_type} compression doesn't support 64 integers, "
+                "data has been converted to 32 bits",
+                AstropyUserWarning,
+            )
+        except ValueError:
+            raise ValueError(
+                f"{compression_type} compression doesn't support 64 integers, "
+                "but data cannot be converted to 32 bits without overflow",
+            )
+
     _check_compressed_header(compressed_header)
 
     # TODO: This implementation is memory inefficient as it generates all the
@@ -565,10 +611,20 @@ def compress_image_data(
         tile_data = image_data[tile_slices]
 
         if tile_data.dtype.kind == "u":
-            if tile_data.dtype.itemsize == 4:
+            if tile_data.dtype.itemsize == 8:
+                # Subtract 2**63 in wrap-around uint64 arithmetic, then
+                # reinterpret the bits as int64. This is equivalent to flipping
+                # the high bit and matches the FITS BZERO=2**63 convention.
+                tile_data = (tile_data - np.uint64(2**63)).view(np.int64)
+            elif tile_data.dtype.itemsize == 4:
                 tile_data = (tile_data.astype(np.int64) - 2**31).astype(np.int32)
             elif tile_data.dtype.itemsize == 2:
                 tile_data = (tile_data.astype(np.int32) - 2**15).astype(np.int16)
+        elif tile_data.dtype.kind == "i" and tile_data.dtype.itemsize == 1:
+            # FITS BITPIX=8 storage is unsigned, so int8 input is recorded via
+            # BZERO=-128 and the stored bytes must be shifted by +128. Without
+            # this the BZERO=-128 applied on read offsets every value by 128.
+            tile_data = (tile_data.astype(np.int16) + 128).astype(np.uint8)
 
         settings = _update_tile_settings(settings, compression_type, tile_data.shape)
 

@@ -47,7 +47,7 @@ Core Classes:
 Index Engines:
     - `SortedArray`: Array-based sorted container implementation (default)
     - `SCEngine`: SortedContainers-based implementation (when available)
-    - `BST`: Binary search tree implementation for sorted data (not for production)
+    - `BST`: Binary search tree implementation for sorted data (not for production, deprecated)
 
 Query Interface Classes:
     - `TableLoc`: Value-based row retrieval using ``.loc[]``.
@@ -222,6 +222,9 @@ if TYPE_CHECKING:
     from . import QTable, Table
 
 
+ENGINE_CLS_DEFAULT = SortedArray
+
+
 @runtime_checkable
 class IndexEngine(Protocol):
     """Protocol defining an index engine class"""
@@ -285,9 +288,8 @@ class Index:
         if columns is not None:
             columns = list(columns)
 
-        # by default, use SortedArray
         if engine is None:
-            engine = SortedArray
+            engine = ENGINE_CLS_DEFAULT
 
         # Validate engine. This catches an easy mistake of `t.add_index("a", "b")`.
         engine_cls = engine if isinstance(engine, type) else engine.__class__
@@ -694,7 +696,7 @@ class SlicedIndex:
         if isinstance(index_slice, tuple):
             self.start, self._stop, self.step = index_slice
         elif isinstance(index_slice, slice):  # index_slice is an actual slice
-            num_rows = len(index.columns[0])
+            num_rows = len(index)
             self.start, self._stop, self.step = index_slice.indices(num_rows)
         else:
             raise TypeError("index_slice must be tuple or slice")
